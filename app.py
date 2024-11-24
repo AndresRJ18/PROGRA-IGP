@@ -74,6 +74,28 @@ with st.sidebar:
     else:
         sub_selected = None
 
+    if selected == "Mapa Interactivo":
+        map_selected = option_menu(
+            "Mapas Interactivos",
+            ["Mapa por Rangos de Magnitud", "Mapa por Departamento"],
+            icons=["map", "pin-map"],
+            menu_icon="geo-alt",
+            default_index=0,
+            styles={
+                "container": {"padding": "5px"},
+                "nav-link": {
+                    "font-size": "14px",
+                    "color": "#cfcfcf",
+                    "margin": "2px",
+                },
+                "nav-link-selected": {
+                    "background-color": "#0056b3",
+                    "color": "white",
+                },
+            },
+        )
+    else:
+        map_selected = None
 #La seleccion para los submenus
 if selected == "Inicio":
     st.title("Inicio")
@@ -242,5 +264,79 @@ elif selected == "Gráficas":
             """
         )
 
-elif selected == "Mapa Interactivo":
-    st.title("Mapa Interactivo")
+
+if selected == "Mapa Interactivo":
+    if map_selected == "Mapa por Rangos de Magnitud":
+        st.title("Mapa Interactivo: Rangos de Magnitud")
+
+        col1, col2 = st.columns([1, 2])  # Dividir en dos columnas
+        with col1:
+            st.header("Filtros")
+            magnitud_min, magnitud_max = st.slider(
+                "Selecciona el rango de magnitud:",
+                min_value=float(data['MAGNITUD'].min()),
+                max_value=float(data['MAGNITUD'].max()),
+                value=(3.0, 5.0),  # Valores iniciales
+                step=0.1,
+            )
+
+            datos_filtrados = data[(data['MAGNITUD'] >= magnitud_min) & (data['MAGNITUD'] <= magnitud_max)]
+
+        with col2:
+            st.header("Mapa de Sismos")
+            # Crear mapa
+            mapa_rangos = folium.Map(location=[-9.19, -75.0152], zoom_start=6)  # Centrado en Perú
+            for _, row in datos_filtrados.iterrows():
+                folium.CircleMarker(
+                    location=[row['LATITUD'], row['LONGITUD']],
+                    radius=5,
+                    color='red',
+                    fill=True,
+                    fill_color='red',
+                    popup=f"Magnitud: {row['MAGNITUD']}<br>Fecha: {row['FECHA_UTC']}",
+                ).add_to(mapa_rangos)
+            st_folium(mapa_rangos, width=700, height=500)
+
+
+    elif map_selected == "Mapa por Departamento":
+        st.title("Mapa Interactivo: Por Departamento")
+        col1, col2 = st.columns([1, 2])  # Dividir en dos columnas
+        with col1:
+            st.header("Selección de Departamento")
+            departamentos_disponibles = sorted(data['DEPARTAMENTO'].unique())
+            depto_seleccionado = st.selectbox("Selecciona el departamento:", departamentos_disponibles)
+            # Filtrar datos del departamento seleccionado
+            datos_departamento = data[data['DEPARTAMENTO'] == depto_seleccionado]
+            # Calcular características del departamento
+            if not datos_departamento.empty:
+                total_sismos = len(datos_departamento)
+                sismo_mas_fuerte = datos_departamento.loc[datos_departamento['MAGNITUD'].idxmax()]
+                fecha_sismo_fuerte = sismo_mas_fuerte['FECHA_UTC']
+                magnitud_fuerte = sismo_mas_fuerte['MAGNITUD']
+                profundidad_promedio = datos_departamento['PROFUNDIDAD'].mean()
+        with col2:
+            st.header("Vista del Departamento")
+            # Mostrar mapa centrado en el departamento seleccionado
+            mapa_departamento = folium.Map(
+                location=[datos_departamento['LATITUD'].mean(), datos_departamento['LONGITUD'].mean()],
+                zoom_start=7,
+            )
+            st_folium(mapa_departamento, width=700, height=500)
+            # Mostrar características en una tabla
+            if not datos_departamento.empty:
+                st.subheader(f"Características del Departamento: {depto_seleccionado}")
+                st.write(
+                    f"""
+
+                    - **Total de Sismos:** {total_sismos}  
+
+                    - **Sismo Más Fuerte:** {magnitud_fuerte} Mw  
+
+                    - **Fecha del Sismo Más Fuerte:** {fecha_sismo_fuerte}  
+
+                    - **Profundidad Promedio:** {profundidad_promedio:.2f} km  
+
+                    """
+                )
+            else:
+                st.write("No hay datos disponibles para el departamento seleccionado.")
