@@ -12,17 +12,32 @@ from st_aggrid.grid_options_builder import GridOptionsBuilder
 file_path = "Catalogo1960_2023.xlsx"
 data = pd.read_excel(file_path)
 
+
+shapefile_path = "DEPARTAMENTOS.shp"
+departments = gpd.read_file(shapefile_path)
+
+if not departments.crs:
+    # Si no tiene CRS, asigna el correcto (puede ser EPSG:4326 o EPSG:32718 para Perú)
+    departments = departments.set_crs("EPSG:4326")
+else:
+    # Transformar al CRS requerido por Folium
+    departments = departments.to_crs("EPSG:4326")
+
+
+
 #Para trabajar los años
 data['FECHA_UTC'] = pd.to_datetime(data['FECHA_UTC'], format='%Y%m%d', errors='coerce')
 data['AÑO'] = data['FECHA_UTC'].dt.year
 
-#Para trabajar los departamentos desde longitud y latitud
+
 geometry = gpd.points_from_xy(data['LONGITUD'], data['LATITUD'])
 geo_df = gpd.GeoDataFrame(data, geometry=geometry)
-shapefile_path = "DEPARTAMENTOS.shp"
-departments = gpd.read_file(shapefile_path)
+geo_df = geo_df.set_crs("EPSG:4326")
+
+
 geo_df = geo_df.set_crs(departments.crs)
 result = gpd.sjoin(geo_df, departments, how="left", predicate="within")
+
 data['DEPARTAMENTO'] = result['NOMBDEP']
 data['DEPARTAMENTO'] = result['NOMBDEP'].fillna("DESCONOCIDO")
 
@@ -276,7 +291,7 @@ if selected == "Mapa Interactivo":
                 "Selecciona el rango de magnitud:",
                 min_value=float(data['MAGNITUD'].min()),
                 max_value=float(data['MAGNITUD'].max()),
-                value=(3.0, 5.0),  # Valores iniciales
+                value=(6.0, 7.0),  # Valores iniciales
                 step=0.1,
             )
 
@@ -298,45 +313,65 @@ if selected == "Mapa Interactivo":
             st_folium(mapa_rangos, width=700, height=500)
 
 
+
+
     elif map_selected == "Mapa por Departamento":
-        st.title("Mapa Interactivo: Por Departamento")
-        col1, col2 = st.columns([1, 2])  # Dividir en dos columnas
+        st.title("Por Departamento")
+        # Dividir en dos columnas
+        col1, col2 = st.columns([2, 1])  # Ajusta las proporciones de las columnas (2:1)
         with col1:
-            st.header("Selección de Departamento")
-            departamentos_disponibles = sorted(data['DEPARTAMENTO'].unique())
-            depto_seleccionado = st.selectbox("Selecciona el departamento:", departamentos_disponibles)
-            # Filtrar datos del departamento seleccionado
-            datos_departamento = data[data['DEPARTAMENTO'] == depto_seleccionado]
-            # Calcular características del departamento
-            if not datos_departamento.empty:
-                total_sismos = len(datos_departamento)
-                sismo_mas_fuerte = datos_departamento.loc[datos_departamento['MAGNITUD'].idxmax()]
-                fecha_sismo_fuerte = sismo_mas_fuerte['FECHA_UTC']
-                magnitud_fuerte = sismo_mas_fuerte['MAGNITUD']
-                profundidad_promedio = datos_departamento['PROFUNDIDAD'].mean()
+
+            # Crear mapa base
+            mapa_departamento = folium.Map(location=[-9.19, -75.0152], zoom_start=6)
+
+            # Función para procesar la selección de departamentos
+            def estilo_departamento(feature):
+                return {"fillColor": "blue", "color": "black", "weight": 1, "fillOpacity": 0.5}
+            # Añadir interactividad al mapa
+            folium.GeoJson(
+                departments,
+                name="Departamentos",
+                tooltip=folium.GeoJsonTooltip(fields=["NOMBDEP"], aliases=["Departamento"]),
+                style_function=estilo_departamento,
+            ).add_to(mapa_departamento)
+
+            # Mostrar el mapa en Streamlit
+            output = st_folium(mapa_departamento, width=700, height=500)
         with col2:
-            st.header("Vista del Departamento")
-            # Mostrar mapa centrado en el departamento seleccionado
-            mapa_departamento = folium.Map(
-                location=[datos_departamento['LATITUD'].mean(), datos_departamento['LONGITUD'].mean()],
-                zoom_start=7,
-            )
-            st_folium(mapa_departamento, width=700, height=500)
-            # Mostrar características en una tabla
-            if not datos_departamento.empty:
-                st.subheader(f"Características del Departamento: {depto_seleccionado}")
-                st.write(
-                    f"""
+            st.subheader("Características del Departamento")
+            # Procesar clic en un departamento
+            if output and output.get("last_active_drawing"):
+                # Obtener el nombre del departamento seleccionado
+                departamento_seleccionado = output["last_active_drawing"]["properties"]["NOMBDEP"]
+                st.write(f"**Departamento Seleccionado:** {departamento_seleccionado}")
+                # Filtrar los datos del departamento
+                datos_departamento = data[data["DEPARTAMENTO"] == departamento_seleccionado]
 
-                    - **Total de Sismos:** {total_sismos}  
-
-                    - **Sismo Más Fuerte:** {magnitud_fuerte} Mw  
-
-                    - **Fecha del Sismo Más Fuerte:** {fecha_sismo_fuerte}  
-
-                    - **Profundidad Promedio:** {profundidad_promedio:.2f} km  
-
-                    """
-                )
+                if not datos_departamento.empty:
+                    total_sismos = int(len(datos_departamento))  # Convertir a entero
+                    promedio_magnitud = round(datos_departamento["MAGNITUD"].mean(), 2)  # Redondear a 2 decimales
+                    sismo_mas_fuerte = datos_departamento.loc[datos_departamento["MAGNITUD"].idxmax()]
+                    magnitud_fuerte = round(sismo_mas_fuerte["MAGNITUD"], 1)  # Redondear a 1 decimal
+                    año_fuerte = int(sismo_mas_fuerte["AÑO"])
+                    # Mostrar características en una tabla
+                    st.table(
+                        pd.DataFrame({
+                            "Características": [
+                                "Total de Sismos",
+                                "Promedio de Magnitud",
+                                "Sismo Más Fuerte",
+                                "Año del Sismo Más Fuerte",
+                            ],
+                            "Valores": [
+                                total_sismos,  # Convertir a entero
+                                promedio_magnitud,  # Redondear a 2 decimales
+                                magnitud_fuerte,  # Redondear a 1 decimal
+                                año_fuerte,  # Convertir a entero
+                            ],
+                        })
+                    )
+                else:
+                    st.write("No hay datos disponibles para este departamento.")
             else:
-                st.write("No hay datos disponibles para el departamento seleccionado.")
+                st.write("Selecciona un departamento en el mapa para ver sus características.")
+
