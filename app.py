@@ -11,6 +11,7 @@ from st_aggrid.grid_options_builder import GridOptionsBuilder
 #descargar el archivo
 file_path = "Catalogo1960_2023.xlsx"
 data = pd.read_excel(file_path)
+
 shapefile_path = "DEPARTAMENTOS.shp"
 departments = gpd.read_file(shapefile_path)
 
@@ -19,7 +20,7 @@ if not departments.crs:
 else:
     # Transformar al CRS requerido por Folium
     departments = departments.to_crs("EPSG:4326")
-    
+
 #Para trabajar los años
 data['FECHA_UTC'] = pd.to_datetime(data['FECHA_UTC'], format='%Y%m%d', errors='coerce')
 data['AÑO'] = data['FECHA_UTC'].dt.year
@@ -28,15 +29,30 @@ geometry = gpd.points_from_xy(data['LONGITUD'], data['LATITUD'])
 geo_df = gpd.GeoDataFrame(data, geometry=geometry)
 geo_df = geo_df.set_crs("EPSG:4326")
 
+
 geo_df = geo_df.set_crs(departments.crs)
 result = gpd.sjoin(geo_df, departments, how="left", predicate="within")
-#print(result.columns)
-data['DEPARTAMENTO'] = result['DEPARTAMEN'].str.strip().str.upper()
+data['DEPARTAMENTO'] = result['DEPARTAMEN'].str.strip().str.upper()  # Asignar nombre del departamento
 
-data['DEPARTAMENTO'] = result['DEPARTAMEN'].fillna("DESCONOCIDO")
+# Clasificar con base en coordenadas (Latitud y Longitud)
+lat_min, lat_max = -18.35, -0.05
+lon_min, lon_max = -81.33, -68.65
 
-#print(result[['IDDPTO', 'DEPARTAMEN']].head())
+# Clasificar puntos "EN EL MAR"
+en_el_mar = (
+    (data['LATITUD'] >= lat_min) & (data['LATITUD'] <= lat_max) &
+    (data['LONGITUD'] >= lon_min) & (data['LONGITUD'] <= lon_max) &
+    (data['DEPARTAMENTO'].isna()) ) # Solo si no pertenece a un departamento
+data.loc[en_el_mar, 'DEPARTAMENTO'] = "EN EL MAR"
 
+# Clasificar puntos "EN OTRO PAÍS"
+en_otro_pais = (
+    (data['LATITUD'] < lat_min) | (data['LATITUD'] > lat_max) |
+    (data['LONGITUD'] < lon_min) | (data['LONGITUD'] > lon_max))
+
+data.loc[en_otro_pais, 'DEPARTAMENTO'] = "EN OTRO PAÍS"
+data['DEPARTAMENTO'] = data['DEPARTAMENTO'].fillna("SIN UBICACIÓN DEFINIDA")
+#Sidebar
 with st.sidebar:
     selected = option_menu(
         "Menú Principal",  # Título del menú
@@ -160,24 +176,21 @@ elif selected == "Gráficas":
     if sub_selected == "Gráfica Interactiva":
         st.title("Gráfica Interactiva")
 
-        # selección de año y departamento
         años_disponibles = sorted(data['AÑO'].dropna().unique(), reverse=True)  # Orden descendente
         año_seleccionado = st.selectbox("Selecciona el año:", años_disponibles)
 
-        # Obtener los departamentos disponibles y ordenarlos
-        departamentos_disponibles = sorted(
-            [depto for depto in data['DEPARTAMENTO'].unique() if depto != "DESCONOCIDO"])
-        departamentos_disponibles.append("DESCONOCIDO")
-        depto_seleccionado = st.selectbox("Selecciona el departamento:", departamentos_disponibles) #el box para seleccionar
+        departamentos_disponibles = sorted(data['DEPARTAMENTO'].dropna().unique())
+        depto_seleccionado = st.selectbox("Selecciona el departamento:",
+                                          departamentos_disponibles)  # Selectbox para departamento
 
+        # Filtrar los datos por el año y el departamento seleccionados
         datos_filtrados = data[(data['AÑO'] == año_seleccionado) &
                                (data['DEPARTAMENTO'] == depto_seleccionado)]
+        datos_filtrados['PROFUNDIDAD_INVERSA'] = datos_filtrados['PROFUNDIDAD'].max() - datos_filtrados['PROFUNDIDAD']
 
-        # Comprobar si hay datos filtrados
         if not datos_filtrados.empty:
             total_sismos = len(datos_filtrados)
             sismo_mas_fuerte = datos_filtrados.loc[datos_filtrados['MAGNITUD'].idxmax()]
-
             st.write(
                 f"### Resumen de Sismos en {depto_seleccionado} durante {año_seleccionado}:")
             st.metric(label="Número Total de Sismos", value=total_sismos)
@@ -192,7 +205,7 @@ elif selected == "Gráficas":
             # Explicación sobre Mw
             st.caption("**Mw**: Magnitud Momento, una medida de la energía liberada por el sismo.")
 
-            # Gráfico de barras apiladas para Rango de Magnitud
+            # Gráfico Rango de Magnitud
             bins = [0, 3, 4, 5, 6, 7, 10] #rangos
             labels = ["<3", "3-4", "4-5", "5-6", "6-7", ">7"]
             datos_filtrados['RANGO_MAGNITUD'] = pd.cut(datos_filtrados['MAGNITUD'], bins=bins, labels=labels)
@@ -214,29 +227,19 @@ elif selected == "Gráficas":
                         de eventos más intensos.
                         """
             )
-            # Histograma para distribución de Profundidad
-            fig_profundidad = px.box(
+            fig_barras_invertidas = px.bar(
                 datos_filtrados,
-                y="PROFUNDIDAD",
-                title=f"PROFUNDIDAD DE LOS SISMOS",
-                labels={"PROFUNDIDAD": "Profundidad (km)"},
-                points="all"  # Mostrar valores atípicos
+                x='FECHA_UTC',
+                y='PROFUNDIDAD_INVERSA',
+                title="PROFUNDIDAD DE SISMOS",
+                labels={"FECHA_UTC": "Fecha", "PROFUNDIDAD_INVERSA": "Profundidad (invertida)"},
+                text_auto=True
             )
-            fig_profundidad.update_traces(
-                marker_color="green",  # Color de los puntos (valores atípicos)
-                boxmean=True,  # Mostrar media en el gráfico (opcional)
-                line_color="green",  # Color de los bordes de la caja y los bigotes
-                fillcolor="lightgreen" )
-
-            st.plotly_chart(fig_profundidad) #grafo
+            fig_barras_invertidas.update_yaxes(title="Profundidad (km)", autorange="reversed")
+            st.plotly_chart(fig_barras_invertidas)
             st.write(
                 """
-                **Gráfico de Cajas y Bigotes: Profundidad de los Sismos**
-
-                Este gráfico muestra cómo varían las profundidades de los sismos:
-                - **Caja**: Rango típico donde ocurren la mayoría de los sismos.
-                - **Línea dentro de la caja**: Profundidad mediana.
-                - **Puntos fuera de los bigotes**: Sismos inusualmente profundos o poco profundos.
+                Este gráfico muestra la profundidad de los sismos registrados, donde barras más bajas representan profundidades mayores. Esta visualización facilita la comparación de profundidades de manera intuitiva, destacando los eventos más superficiales o profundos en función de su longitud visual.
                 """
             )
         else:
@@ -261,7 +264,7 @@ elif selected == "Gráficas":
             y permite analizar la evolución de los eventos sísmicos a lo largo del tiempo.
             """
         )
-        #  gráfico de barras apiladas
+        # GRAFICA DE BARRAS APILADAS
         bins = [0, 3, 4, 5, 6, 7, 10] #rangos
         labels = ["<3", "3-4", "4-5", "5-6", "6-7", ">7"]
         data['RANGO_MAGNITUD'] = pd.cut(data['MAGNITUD'], bins=bins, labels=labels)
@@ -278,8 +281,6 @@ elif selected == "Gráficas":
                     "RANGO_MAGNITUD": "Rango de Magnitud"},
             text_auto=True,  # Mostrar los valores directamente en las barras
         )
-
-        # Ajustar diseño del gráfico
         fig_barras_apiladas.update_layout(
             xaxis=dict(title="Departamento", tickangle=45),  # Inclinación de etiquetas para mejor legibilidad
             yaxis=dict(
@@ -298,13 +299,17 @@ elif selected == "Gráficas":
             entender la proporción de sismos de diferentes intensidades en cada región.
             """
         )
+
 if selected == "Mapa Interactivo":
     if map_selected == "Mapa por Rangos de Magnitud":
         st.title("Mapa Interactivo: Rangos de Magnitud")
 
         col1, col2 = st.columns([1, 2])  # Dividir en dos columnas
         with col1:
-            st.header("Filtros")
+            st.header(""
+                      ""
+                      ""
+                      "")
             magnitud_min, magnitud_max = st.slider(
                 "Selecciona el rango de magnitud:",
                 min_value=float(data['MAGNITUD'].min()),
@@ -312,7 +317,6 @@ if selected == "Mapa Interactivo":
                 value=(6.0, 7.0),  # Valores iniciales
                 step=0.1,
             )
-
             datos_filtrados = data[(data['MAGNITUD'] >= magnitud_min) & (data['MAGNITUD'] <= magnitud_max)]
 
         with col2:
@@ -336,11 +340,12 @@ if selected == "Mapa Interactivo":
         col1, col2 = st.columns([2, 1])  # Ajusta las proporciones de las columnas (2:1)
         with col1:
 
+            # Crear mapa base
             mapa_departamento = folium.Map(location=[-9.19, -75.0152], zoom_start=6)
+
             # Función para procesar la selección de departamentos
             def estilo_departamento(feature):
                 return {"fillColor": "blue", "color": "black", "weight": 1, "fillOpacity": 0.5}
-            # Añadir interactividad al mapa
             folium.GeoJson(
                 departments,
                 name="Departamentos",
@@ -352,23 +357,19 @@ if selected == "Mapa Interactivo":
             output = st_folium(mapa_departamento, width=700, height=500)
         with col2:
             st.subheader("Características del Departamento")
-            # Procesar clic en un departamento
             if output and output.get("last_active_drawing"):
-                # Obtener el nombre del departamento seleccionado
                 departamento_seleccionado = output["last_active_drawing"]["properties"]["DEPARTAMEN"]
                 st.write(f"**Departamento Seleccionado:** {departamento_seleccionado}")
-                # Filtrar los datos del departamento
                 datos_departamento = data[data["DEPARTAMENTO"] == departamento_seleccionado]
 
                 if not datos_departamento.empty:
                     # Calcular características
-                    total_sismos = int(len(datos_departamento))  # Convertir a entero
-                    promedio_magnitud = round(datos_departamento["MAGNITUD"].mean(), 2)  # Redondear a 2 decimales
+                    total_sismos = int(len(datos_departamento))
+                    promedio_magnitud = round(datos_departamento["MAGNITUD"].mean(), 2)
                     sismo_mas_fuerte = datos_departamento.loc[datos_departamento["MAGNITUD"].idxmax()]
-                    magnitud_fuerte = round(sismo_mas_fuerte["MAGNITUD"], 1)  # Redondear a 1 decimal
-                    año_fuerte = int(sismo_mas_fuerte["AÑO"])  # Convertir a entero
+                    magnitud_fuerte = round(sismo_mas_fuerte["MAGNITUD"], 1)
+                    año_fuerte = int(sismo_mas_fuerte["AÑO"])
 
-                    # Crear un DataFrame con los valores calculados
                     tabla = pd.DataFrame({
                         "Características": [
                             "Total de Sismos",
@@ -383,13 +384,10 @@ if selected == "Mapa Interactivo":
                             int(año_fuerte),
                         ],
                     })
-
                     tabla["Valores"] = tabla["Valores"].apply(
                         lambda x: f"{x:.2f}" if isinstance(x, float) else f"{x}"
                         # Solo redondear los flotantes a 2 decimales
                     )
-
-                    # Mostrar la tabla
                     st.table(tabla)
                 else:
                     st.write("No hay datos disponibles para este departamento.")
